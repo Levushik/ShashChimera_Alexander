@@ -67,17 +67,27 @@ def verbalize_san(
 
     # Piece type
     first = san[0]
-    print(f"DEBUG: first char of SAN is '{first}'. А целиком епты  ХУЙНЯ: {san}")
     if first.isupper() and first in _PIECE_NAMES:
         piece = _PIECE_NAMES[first]
     else:
-        initial_square = san[0:2]
-        print(f"DEBUG: initial_square is '{initial_square}'")
-        p = board_before.piece_at(chess.parse_square(initial_square)) if board_before else None
-        if p:
-            piece = chess.piece_name(p.piece_type)
-        else:
-            piece = "pawn"
+        # Pawn move: try to infer from board or SAN context
+        piece = "pawn"
+        # For pawn captures like "bxc3", we need the board to find the source square
+        if board_before and is_capture:
+            try:
+                # Use the board to find the actual source and target squares
+                move = board_before.parse_san(san)
+                source_sq = chess.square_name(move.from_square)
+                target_sq = chess.square_name(move.to_square)
+                # Verify the captured piece
+                target_piece = board_before.piece_at(move.to_square)
+                if target_piece:
+                    captured_name = chess.piece_name(target_piece.piece_type)
+                    action = f"captures {captured_name} on"
+                    return f"{Color}'s {piece} {action} {target_sq}{suffix}"
+            except (ValueError, AttributeError):
+                pass
+
     if is_capture:
         captured_name: Optional[str] = None
         if board_before is not None:
@@ -141,6 +151,50 @@ def verbalize_pv(pv_san: list[str], stm: str) -> str:
     return f"engine plans {labels[0]} — after {labels[1]}, then {labels[2]}"
 
 
+def verbalize_pv_verbose(pv_san: list[str], stm: str) -> str:
+    """
+    Verbose PV: shows who moves at each step with explicit color attribution.
+    Helps small LLMs understand the sequence and whose turn it is.
+
+    Example: "Engine plans: Black pawn to e6 — after White's knight to c3,
+             then Black's pawn to g6"
+
+    stm = side to move ("white" | "black")
+    """
+    if not pv_san:
+        return ""
+
+    # Track whose turn it is for each move in the sequence
+    moves_with_color = []
+    current_color = stm
+    for san in pv_san[:3]:
+        if san:
+            label = _piece_label(san)
+            if label:
+                Color = current_color.capitalize()
+                moves_with_color.append((Color, label))
+            # Alternate to next player
+            current_color = "black" if current_color == "white" else "white"
+
+    if not moves_with_color:
+        return ""
+
+    if len(moves_with_color) == 1:
+        color, label = moves_with_color[0]
+        return f"Engine plans: {color} {label}"
+
+    if len(moves_with_color) == 2:
+        color1, label1 = moves_with_color[0]
+        color2, label2 = moves_with_color[1]
+        return f"Engine plans: {color1} {label1} — after {color2}'s {label2}"
+
+    # 3 moves
+    color1, label1 = moves_with_color[0]
+    color2, label2 = moves_with_color[1]
+    color3, label3 = moves_with_color[2]
+    return f"Engine plans: {color1} {label1} — after {color2}'s {label2}, then {color3}'s {label3}"
+
+
 def verbalize_eval(
     cp_white: Optional[int],
     mate_white: Optional[int],
@@ -191,7 +245,9 @@ def verbalize_eval_delta(
     if abs_d < 10:
         return "no significant change"
 
-    direction = "gain" if our_delta > 0 else "loss"
+    # Who actually benefited from the move?
+    beneficiary = our_side if our_delta > 0 else ("black" if our_side == "white" else "white")
+    Beneficiary = beneficiary.capitalize()
 
     if abs_d < 50:
         magnitude = "small"
@@ -200,4 +256,5 @@ def verbalize_eval_delta(
     else:
         magnitude = "decisive"
 
-    return f"{magnitude} {direction} for us"
+    direction = "gain"
+    return f"{magnitude} {direction} for {Beneficiary}"
